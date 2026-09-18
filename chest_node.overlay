@@ -1,0 +1,24 @@
+#include "zephyr/dt-bindings/adc/nrf-saadc.h"
+/{
+	ad8232: ad8232{
+		compatible = "adi,ad8232";
+		io-channels = <&adc 0>;
+		lo-plus-gpios = <&gpio0 22 GPIO_ACTIVE_HIGH>;
+		lo-minus-gpios = <&gpio0 24 GPIO_ACTIVE_HIGH>;
+	};
+};
+&adc {
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel@0 {
+		reg = <0>;
+		zephyr,gain = "ADC_GAIN_1_6";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,input-positive = <NRF_SAADC_AIN0>; /* P0.02 = AIN0 = D19 */
+		zephyr,resolution = <12>;
+	};
+};
+
+
