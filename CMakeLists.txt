@@ -5,12 +5,11 @@ project(chest_node)
 
 target_sources(app PRIVATE
     #core/main.c
-    test/driver_test.c
-    drivers/bmi323/bmi323_i2c.c
-    drivers/ad8232/ad8232.c
+    test/ble_test.c
 )
 target_include_directories(app PRIVATE
     core
     drivers/ad8232
     drivers/bmi323
+    services/ble_service/nus.h
 )
