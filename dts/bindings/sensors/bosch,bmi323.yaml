@@ -1,0 +1,13 @@
+# Copyright (c) 2023 Trackunit Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+description: Bosch BMI323 inertial measurement unit
+compatible: "bosch,bmi323"
+include: i2c-device.yaml
+on-bus: i2c
+
+properties:
+  int-gpios:
+    type: phandle-array
+    required: true
+    description: GPIO connected to the BMI323 INT1 pin

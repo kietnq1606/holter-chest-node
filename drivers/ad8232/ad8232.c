@@ -95,6 +95,7 @@ static int ad8232_init(const struct device *dev)
     if (ret < 0) {
         return ret;
     }
+    printk("AD8232: Ready!\n")
     return 0;
 }   
 
