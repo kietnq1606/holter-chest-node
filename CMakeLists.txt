@@ -6,10 +6,11 @@ project(chest_node)
 target_sources(app PRIVATE
     #core/main.c
     test/ble_test.c
+    services/ble_service/nus.c
 )
 target_include_directories(app PRIVATE
     core
     drivers/ad8232
     drivers/bmi323
-    services/ble_service/nus.h
+    services/ble_service
 )
