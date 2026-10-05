@@ -3,6 +3,10 @@
 #include <zephyr/dt-bindings/i2c/i2c.h>
 
 / {
+    aliases {
+        storage-flash = &w25n01gv;
+    };
+
     ad8232: ad8232 {
         compatible = "adi,ad8232";              /* Bind node to AD8232 driver */
 
@@ -51,5 +55,37 @@
         int-gpios = <&gpio1 4 GPIO_ACTIVE_HIGH>; /* Receive sensor interrupt */
 
         status = "okay";                        /* Enable sensor */
+    };
+};
+&i2c1 {
+    status = "disabled";
+};
+&uart0 {
+    status = "disabled";
+};
+&spi2 {
+    status = "okay";
+    pinctrl-0 = <&spi2_default>;
+    pinctrl-1 = <&spi2_sleep>;
+    pinctrl-names = "default", "sleep";
+
+    /* Active-low chip select for the NAND. */
+    cs-gpios = <&gpio0 9 GPIO_ACTIVE_LOW>;
+
+    w25n01gv: flash@0 {
+        compatible = "jedec,spi-nand";
+        reg = <0>; /* Uses chip-select entry 0. */
+        /* nRF52840 SPIM2 limit; W25N01GV supports a higher clock. */
+        spi-max-frequency = <8000000>;
+        jedec-id = [ef aa 21]; /* W25N01GV manufacturer and device ID. */
+        size-bytes = <134217728>; /* Total capacity: 1 Gbit = 128 MiB. */
+        erase-block-size = <131072>; /* Physical erase block: 64 × 2048-byte pages. */
+        write-block-size = <2048>; /* NAND page-program size. */
+        /* Maximum operation times in microseconds; follow the chip datasheet. */
+        block-erase-duration-max = <10000>;
+        page-program-duration-max = <700>;
+        page-read-duration-max = <100>;
+        reset-duration-max = <500>;
+        status = "okay";
     };
 };
