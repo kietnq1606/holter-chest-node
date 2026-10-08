@@ -8,6 +8,7 @@ target_sources(app PRIVATE
     #test/w25n01gv_test.c
     test/ad8232_test.c
     services/storage_service/storage.c
+    service/ble_service/nus.c
 
 )
 target_include_directories(app PRIVATE

@@ -45,7 +45,7 @@ static int commit_metadata(uint32_t next_write_offset);
  */
 static int storage_write_marker(void);
 /* Read one page into the shared buffer and check its erased state. */
-static int block_is_erased(uint32_t address, bool *erased);
+int block_is_erased(uint32_t address, bool *erased);
 /* Recover the latest valid metadata and account for used metadata pages. */
 static int storage_recover_metadata(void);
 /* Skip programmed data pages beyond the recovered write offset. */
@@ -109,6 +109,21 @@ int storage_init(void){
     printk("Storage: ready, next write address=%u\n",
            (unsigned int)latest_metadata.write_offset);
 
+    return 0;
+}
+
+int storage_get_data_size(uint32_t *size)
+{
+    if (size == NULL) {
+        return -EINVAL;
+    }
+
+    if (!recovered ||
+        !offset_is_valid(latest_metadata.write_offset)) {
+        return -EINVAL;
+    }
+
+    *size = latest_metadata.write_offset - METADATA_AREA_SIZE;
     return 0;
 }
 
