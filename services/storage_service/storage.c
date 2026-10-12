@@ -50,6 +50,8 @@ int block_is_erased(uint32_t address, bool *erased);
 static int storage_recover_metadata(void);
 /* Skip programmed data pages beyond the recovered write offset. */
 static int storage_recover_data(void);
+/* checking data erea has avaible slot*/
+int storage_check_write_space(void);
 
 int storage_init(void){
     int ret;
@@ -453,4 +455,27 @@ static int storage_recover_data(void)
 
     /* FLASH_SIZE is a valid address value indicating full storage. */
     return commit_metadata(offset);
+}
+
+/* Check space for one page*/
+int storage_check_write_space(void)
+{
+    /* Reject calls from interrupt context. */
+    if (k_is_in_isr()) {
+        return -EWOULDBLOCK;
+    }
+
+    /* Require recovered metadata and an in-range, aligned offset. */
+    if (!recovered || !offset_is_valid(latest_metadata.write_offset)) {
+        return -EINVAL;
+    }
+
+    /* A page needs 2048 bytes: 2046 bytes of data plus 2 bytes of CRC. */
+    if (FLASH_SIZE - latest_metadata.write_offset
+        < STORAGE_BLOCK_SIZE) {
+        return -ENOSPC;
+    }
+
+    /* There is enough space to write one complete page. */
+    return 0;
 }

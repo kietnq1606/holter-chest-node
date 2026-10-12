@@ -20,8 +20,7 @@
 #define BLE_TYPE_DATA           0x02U
 #define BLE_TYPE_END            0x05U
 #define BLE_ACK_TIMEOUT_MS      2000 /* NOTE REVIEW: Tune this timeout for the phone app. */
-
-
+#define READ_STORAGE_CMD        0xAAU
 
 /* Handle data written by the peer to the NUS RX characteristic. */
 static void rx_received(struct bt_conn *conn, const uint8_t *data, uint16_t len);
@@ -59,7 +58,7 @@ enum ble_app_state {
 static struct {
     uint8_t code;
     bool received_cmd; // Flag to indicate if a command has been received
-    bool verified_cmd; // Flag to indicate if the received command has been verified
+    bool verified_cmd; /* Validated session owns the storage mutex until cleanup. */
     bool success_send; // Flag to indicate if the reply has been sent successfully
     uint8_t current_state; // Current state of the BLE application
     bool ack_received; // Flag to indicate if an ACK has been received
@@ -73,17 +72,16 @@ static struct {
 /* Full 2048-byte page: 2046-byte payload and two stored CRC bytes. */
 static uint8_t read_page[STORAGE_BLOCK_SIZE];
 
-/* NOTE REVIEW: Only the BLE thread owns this state; no mutex while writing is stopped. */
 static struct {
     struct bt_conn *conn; /* Reference held for the current session. */
     uint32_t storage_end; /* Committed physical extent, including page CRCs. */
     uint32_t page_offset; /* Physical offset of the page currently being sent. */
     uint16_t page_pos;    /* 2046 means that the next page must be loaded. */
     uint16_t seq;         /* Preserve between sessions on the same connection. */
-    uint16_t payload_len
+    uint16_t payload_len;
     int64_t deadline;     /* ACK deadline in uptime milliseconds. */
     uint8_t packet[BLE_PACKET_SIZE]; /* Retained unchanged until ACK or retry. */
-} transfer;
+}   ;
 
 // stuct for a event pushed in queue
 struct ble_rx_event {
@@ -102,12 +100,12 @@ static int decode_storage_data(uint32_t offset, uint8_t *buffer);
 static int decode_command(const uint8_t *data, uint16_t len, uint16_t *sequence);
 static void queue_rx_event(struct bt_conn *conn, uint8_t code, uint16_t seq);
 static void fsm_change_state(void);
-static void fsm_handle_state(void);
+static void fsm_handle_state(struct k_mutex *storage_mutex);
 static void idle_handler(void);
-static void received_cmd_handler(void);
+static void received_cmd_handler(struct k_mutex *storage_mutex);
 static void handle_cmd_handler(void);
 static void wait_reply_handler(void);
-static void done_handler(void);
+static void done_handler(struct k_mutex *storage_mutex);
 
 
 void ble_thread_init(void)
@@ -123,19 +121,24 @@ void ble_thread_init(void)
 
 void ble_thread(void *p1, void *p2, void *p3)
 {
-    (void)p1;
+    /* Use the shared mutex passed by the thread creator. */
+    struct k_mutex *storage_mutex = (struct k_mutex *)p1;
     (void)p2;
     (void)p3;
 
-    /* NOTE REVIEW: Run immediate states without polling; sleep for RX or an ACK deadline. */
-    for (;;) {
+    while (1) {
+        /* Receive one queued BLE event for processing in this thread. */
         struct ble_rx_event event;
+        /* Process active states immediately without waiting for an event. */
         k_timeout_t timeout = K_NO_WAIT;
-
         if (ble_app_flags.current_state == ble_app_idle) {
+            /* Wait for a new event without polling while idle. */
             timeout = K_FOREVER;
-        } else if (ble_app_flags.current_state == ble_app_wait_reply) {
+        }
+        else if (ble_app_flags.current_state == ble_app_wait_reply) {
+            /* Calculate the remaining ACK wait time to preserve the original deadline. */
             int64_t remaining = transfer.deadline - k_uptime_get();
+            /* Wait until an event arrives or the deadline expires; do not wait if expired. */
             timeout = remaining > 0 ? K_MSEC(remaining) : K_NO_WAIT;
         }
 
@@ -146,15 +149,18 @@ void ble_thread(void *p1, void *p2, void *p3)
                     event.conn = NULL; /* Transfer the queue's reference to the session. */
                     ble_app_flags.code = READ_STORAGE;
                     ble_app_flags.received_cmd = true;
-                } else {
+                } 
+                else {
                     printk("[BLE_THREAD] Command ignored: busy\n");
                 }
-            } else if (event.conn == transfer.conn) {
+            } 
+            /* Ignore replies from other connections to protect the active session. */
+            else if (event.conn == transfer.conn) {
                 if (event.code == NONE) {
                     ble_app_flags.failed = true;
                     printk("[BLE_THREAD] Session disconnected\n");
-                } else if (ble_app_flags.current_state == ble_app_wait_reply &&
-                           event.seq == transfer.seq) {
+                } 
+                else if (ble_app_flags.current_state == ble_app_wait_reply && event.seq == transfer.seq) {
                     /* Keep the first valid reply for this packet. */
                     if (!ble_app_flags.ack_received && !ble_app_flags.nack_received) {
                         ble_app_flags.ack_received = event.code == RECEIVED_ACK;
@@ -163,15 +169,17 @@ void ble_thread(void *p1, void *p2, void *p3)
                 }
             }
 
+            /* Release the event reference unless ownership moved to the session. */
             if (event.conn != NULL) {
                 bt_conn_unref(event.conn);
             }
         }
 
-        if (!ble_app_flags.failed ||
-            ble_app_flags.current_state == ble_app_done) {
-            fsm_handle_state();
+        /* Skip normal work after failure, but allow session cleanup to run. */
+        if (!ble_app_flags.failed || ble_app_flags.current_state == ble_app_done) {
+            fsm_handle_state(storage_mutex);
         }
+        /* Use the handler results to select the next state. */
         fsm_change_state();
     }
 }
@@ -271,8 +279,7 @@ static int decode_storage_data(uint32_t offset, uint8_t *buffer)
 /* Frame: TYPE(1) + SEQ(2) + CRC(2), little-endian. */
 static int decode_command(const uint8_t *data,
                           uint16_t len,
-                          uint16_t *sequence)
-{
+                          uint16_t *sequence){
     if (data == NULL || sequence == NULL || len != 5U) {
         return -EINVAL;
     }
@@ -285,7 +292,7 @@ static int decode_command(const uint8_t *data,
     }
     int code;
     switch (type) {
-    case READ_STORAGE:
+    case READ_STORAGE_CMD:
         code = READ_STORAGE;
         break;
 
@@ -392,11 +399,13 @@ static void fsm_change_state(void)
             ble_app_flags.current_state = ble_app_idle;
             break;
         default:
+            printk("[BLE_THREAD] Invalid FSM state: %u\n",
+                   (unsigned int)ble_app_flags.current_state);
             ble_app_flags.current_state = ble_app_idle;
             break;
         }
 }
-static void fsm_handle_state(void)
+static void fsm_handle_state(struct k_mutex *storage_mutex)
 {
     switch (ble_app_flags.current_state) {
     case ble_app_idle:
@@ -404,7 +413,7 @@ static void fsm_handle_state(void)
         break;
 
     case ble_app_received_cmd:
-        received_cmd_handler();
+        received_cmd_handler(storage_mutex);
         break;
 
     case ble_app_handle_cmd:
@@ -416,81 +425,110 @@ static void fsm_handle_state(void)
         break;
 
     case ble_app_done:
-        done_handler();
+        done_handler(storage_mutex);
         break;
 
     default:
+        printk("[BLE_THREAD] No handler for state: %u\n",
+               (unsigned int)ble_app_flags.current_state);
         break;
     }
 }
 
 static void idle_handler(void){
-    if (!ble_app_flags.received_cmd) {
-        return;
-    }
-
-    ble_app_flags.verified_cmd = false;
-    ble_app_flags.success_send = false;
-    ble_app_flags.ack_received = false;
-    ble_app_flags.nack_received = false;
-    ble_app_flags.ack_timeout = false;
-    ble_app_flags.retry_count = 0;
-    ble_app_flags.done = false;
-    ble_app_flags.failed = false;
 }
 
-static void received_cmd_handler(void)
+static void received_cmd_handler(struct k_mutex *storage_mutex)
 {
+    /* Keep validation false until the storage extent is checked. */
     ble_app_flags.verified_cmd = false;
 
     if (ble_app_flags.code != READ_STORAGE) {
+        printk("[BLE_THREAD] Invalid command: %u\n",
+               (unsigned int)ble_app_flags.code);
         return;
     }
 
-    int err = storage_get_data_size(&transfer.storage_end);
-    if (err != 0 || transfer.storage_end % STORAGE_BLOCK_SIZE != 0U) {
-        printk("[BLE_THREAD] Invalid storage extent: %d\n", err);
+    if (storage_mutex == NULL) {
+        printk("[BLE_THREAD] No storage mutex\n");
         return;
     }
 
+    int err = k_mutex_lock(storage_mutex, K_FOREVER);
+    if (err != 0) {
+        printk("[BLE_THREAD] Storage lock failed: %d\n", err);
+        return;
+    }
+
+    err = storage_get_data_size(&transfer.storage_end);
+    if (err != 0) {
+        printk("[BLE_THREAD] Storage extent failed: %d\n", err);
+        goto unlock_storage;
+    }
+    if (transfer.storage_end % STORAGE_BLOCK_SIZE != 0U) {
+        printk("[BLE_THREAD] Unaligned storage extent: %u\n",
+               (unsigned int)transfer.storage_end);
+        goto unlock_storage;
+    }
+
+    /* Start at the first page; the end position forces an initial page load. */
     transfer.page_offset = 0U;
     transfer.page_pos = STORAGE_BLOCK_DATA_SIZE;
+    /* Retain ownership across reads, BLE retries and the erase after END ACK. */
     ble_app_flags.verified_cmd = true;
+    return;
+
+unlock_storage:
+    /* Invalid sessions must release the lock before leaving validation. */
+    err = k_mutex_unlock(storage_mutex);
+    if (err != 0) {
+        printk("[BLE_THREAD] Storage unlock failed: %d\n", err);
+    }
 }
 
 static void handle_cmd_handler(void)
 {
-    if (ble_app_flags.code != READ_STORAGE || transfer.conn == NULL ||
-        bt_gatt_get_mtu(transfer.conn) < BLE_PACKET_SIZE + 3U) {
-        printk("[BLE_THREAD] Cannot send a 244-byte packet\n");
+    if (transfer.conn == NULL) {
+        printk("[BLE_THREAD] No session connection\n");
+        ble_app_flags.failed = true;
+        return;
+    }
+    /* The ATT notification header needs three bytes in addition to the frame. */
+    uint16_t mtu = bt_gatt_get_mtu(transfer.conn);
+    if (mtu < BLE_PACKET_SIZE + 3U) {
+        printk("[BLE_THREAD] MTU too small: %u\n", (unsigned int)mtu);
         ble_app_flags.failed = true;
         return;
     }
 
     if (ble_app_flags.success_send) {
-        // if retry_count is greater than max retries chaging the done state, else increase try count
+        /* Bound retransmissions while preserving the original frame and sequence. */
         if (ble_app_flags.retry_count >= BLE_MAX_RETRIES) {
+            printk("[BLE_THREAD] Send retry limit: seq=%u\n",
+                   (unsigned int)transfer.seq);
             ble_app_flags.failed = true;
             return;
         }
         ble_app_flags.retry_count++;
     } 
     else {
-        // hadle case sened all datas of one page
+        /* Load a page only after all payload bytes in the previous page are ACKed. */
         if (transfer.page_pos == STORAGE_BLOCK_DATA_SIZE) {
-            // check if there is sending all datas in storage changing done state
+            /* Send END once the committed storage extent has been consumed. */
             if (transfer.page_offset == transfer.storage_end) {
                 ble_app_flags.done = true;
             } 
             else {
                 /* Decode in place to avoid another 2046-byte payload buffer. */
                 int err = decode_storage_data(transfer.page_offset, read_page);
-                // err = 1 is page not data
+                /* Skip erased pages because they contain no validated payload. */
                 if (err == 1) {
-                    transfer.page_offset += STORAGE_BLOCK_SIZE; // + 2048Byte
+                    transfer.page_offset += STORAGE_BLOCK_SIZE;
                     return; /* Skip the erased page, then process the next one. */
                 }
                 if (err != 0) {
+                    printk("[BLE_THREAD] Page decode failed: offset=%u, err=%d\n",
+                           (unsigned int)transfer.page_offset, err);
                     ble_app_flags.failed = true;
                     return;
                 }
@@ -499,6 +537,8 @@ static void handle_cmd_handler(void)
         }
         /* Clear the entire packet to avoid sending stale bytes in unused payload space. */
         memset(transfer.packet, 0, sizeof(transfer.packet));
+        /* END carries no payload; DATA replaces this with its actual length. */
+        transfer.payload_len = 0U;
         if (!ble_app_flags.done) {
             /* Limit the payload to the bytes remaining in the current page. */
             transfer.payload_len = MIN(BLE_PAYLOAD_SIZE, STORAGE_BLOCK_DATA_SIZE - transfer.page_pos);
@@ -511,12 +551,15 @@ static void handle_cmd_handler(void)
         sys_put_le16(transfer.seq, transfer.packet + 1U);
         /* Store the number of valid payload bytes in byte 3. */
         transfer.packet[3] = transfer.payload_len;
-        // call encode_ble_packet to append CRC
-        if (encode_ble_packet(transfer.packet) != 0) {
+        /* Append CRC so the receiver can detect a corrupted frame. */
+        int encode_err = encode_ble_packet(transfer.packet);
+        if (encode_err != 0) {
+            printk("[BLE_THREAD] Frame encode failed: %d\n", encode_err);
             ble_app_flags.failed = true;
             return;
         }
     }
+    /* Clear old replies before waiting for confirmation of this send attempt. */
     ble_app_flags.ack_received = false;
     ble_app_flags.nack_received = false;
     ble_app_flags.ack_timeout = false;
@@ -537,22 +580,34 @@ static void handle_cmd_handler(void)
 static void wait_reply_handler(void)
 {
     if (ble_app_flags.ack_received) {
+        /* Advance only confirmed DATA; END does not consume storage bytes. */
         if (!ble_app_flags.done) {
             transfer.page_pos += transfer.payload_len;
             if (transfer.page_pos == STORAGE_BLOCK_DATA_SIZE) {
                 transfer.page_offset += STORAGE_BLOCK_SIZE;
             }
         }
+        else {
+            /* Erase only after END is acknowledged to preserve data on transfer failure. */
+            int err = storage_erase_all_datas();
+            if (err != 0) {
+                printk("[BLE_THREAD] Storage erase failed: %d\n", err);
+                ble_app_flags.failed = true;
+                return;
+            }
+        }
 
         transfer.seq++;
         ble_app_flags.success_send = false; /* Next handler prepares a new packet. */
         ble_app_flags.retry_count = 0U;
-        ble_app_flags.nack_received = false;
-        ble_app_flags.ack_timeout = false;
         return; /* Leave ACK set for fsm_change_state(). */
     }
 
     if (ble_app_flags.nack_received || k_uptime_get() >= transfer.deadline) {
+        printk("[BLE_THREAD] %s: seq=%u, retries=%u\n",
+               ble_app_flags.nack_received ? "NACK" : "ACK timeout",
+               (unsigned int)transfer.seq,
+               (unsigned int)ble_app_flags.retry_count);
         ble_app_flags.ack_timeout = !ble_app_flags.nack_received;
         if (ble_app_flags.retry_count >= BLE_MAX_RETRIES) {
             printk("[BLE_THREAD] Reply retry limit reached\n");
@@ -562,15 +617,23 @@ static void wait_reply_handler(void)
     }
 }
 
-/* NOTE REVIEW: Check connection-reference release and session reset on all exits. */
-static void done_handler(void)
+static void done_handler(struct k_mutex *storage_mutex)
 {
+    /* Release after erase or abort; only validated sessions retain the lock. */
+    if (ble_app_flags.verified_cmd) {
+        int err = k_mutex_unlock(storage_mutex);
+        if (err != 0) {
+            printk("[BLE_THREAD] Storage unlock failed: %d\n", err);
+        }
+    }
+
+    /* Release the session reference without requesting a BLE disconnect. */
     if (transfer.conn != NULL) {
         bt_conn_unref(transfer.conn);
         transfer.conn = NULL;
     }
 
-    /* NOTE REVIEW: Retire this sequence even after failure, before accepting another CMD. */
+    /* Avoid immediately reusing the last sequence after an aborted session. */
     transfer.seq++;
     transfer.storage_end = 0U;
     transfer.page_offset = 0U;
@@ -578,6 +641,7 @@ static void done_handler(void)
     transfer.payload_len = 0U;
     transfer.deadline = 0;
 
+    /* Clear session flags so the next command starts with no stale replies. */
     ble_app_flags.code = NONE;
     ble_app_flags.received_cmd = false;
     ble_app_flags.verified_cmd = false;

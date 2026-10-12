@@ -16,7 +16,8 @@ int storage_write(const uint8_t *buffer, size_t length);
 
 /* Reads committed data at an offset relative to the storage data region. */
 int storage_read(uint32_t offset, uint8_t *buffer, size_t length);
-
+/* checking data erea has avaible slot*/
+int storage_check_write_space(void);
 // get verified area saved data
 int storage_get_data_size(uint32_t *size);
 /* Erases stored data; power-loss recovery during erase is not guaranteed. */
