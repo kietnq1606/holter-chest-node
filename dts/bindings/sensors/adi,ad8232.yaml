@@ -1,0 +1,16 @@
+description: "Analog Devices AD8232 Heart Rate Monitor Front-End"
+compatible: "adi,ad8232"
+include: base.yaml
+properties:
+  io-channels:
+    type: phandle-array
+    required: true
+    description: "ADC channel for the AD8232 output signal"
+  lo-plus-gpios:
+    type: phandle-array
+    required: true
+    description: "GPIO for LO+ output"
+  lo-minus-gpios:
+    type: phandle-array
+    required: true
+    description: "GPIO for LO- output"

@@ -1,0 +1,56 @@
+/* AD8232 gain measurement at P0.29; calibration mode control via 74HC4053. */
+#include <zephyr/dt-bindings/adc/nrf-saadc.h>
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+/ {
+    ad8232: ad8232 {
+        compatible = "adi,ad8232";
+        io-channels = <&adc 0>;
+        lo-plus-gpios = <&gpio0 22 GPIO_ACTIVE_HIGH>;
+        lo-minus-gpios = <&gpio0 24 GPIO_ACTIVE_HIGH>;
+        status = "okay";
+    };
+
+    /* Mode 0: 0 mV; mode 1: nominal +1 mV; mode 2: ECG. */
+    zephyr,user {
+        sel-cal-gpios = <&gpio1 6 GPIO_ACTIVE_HIGH>;
+        sel-pulse-gpios = <&gpio0 6 GPIO_ACTIVE_HIGH>;
+    };
+};
+
+&adc {
+    status = "okay";
+    #address-cells = <1>;
+    #size-cells = <0>;
+
+    /* AD8232 OUT: P0.29 / AIN5. */
+    channel@0 {
+        reg = <0>;
+        zephyr,gain = "ADC_GAIN_1_6";
+        zephyr,reference = "ADC_REF_INTERNAL";
+        zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+        zephyr,input-positive = <NRF_SAADC_AIN5>;
+        zephyr,resolution = <12>;
+    };
+};
+
+/* No I2C/SPI acquisition; diagnostic output uses RTT. */
+&i2c0 {
+    status = "disabled";
+};
+
+&i2c1 {
+    status = "disabled";
+};
+
+&spi0 {
+    status = "disabled";
+};
+
+&spi2 {
+    status = "disabled";
+};
+
+&uart0 {
+    status = "disabled";
+};
