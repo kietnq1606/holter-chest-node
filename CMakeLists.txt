@@ -4,6 +4,8 @@ find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(chest_node)
 
 target_sources(app PRIVATE
+    drivers/signal_mux/signal_mux.c
+    drivers/debug_io/debug_io.c
     #core/main.c
     #test/w25n01gv_test.c
     test/ad8232_test.c
@@ -12,6 +14,8 @@ target_sources(app PRIVATE
 
 )
 target_include_directories(app PRIVATE
+    drivers/signal_mux
+    drivers/debug_io
     core
     drivers/ad8232
     drivers/bmi323

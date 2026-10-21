@@ -1,6 +1,7 @@
 #include "ble_thread.h"
 #include "nus.h"
 #include "storage.h"
+#include "storage_thread.h"
 #include <errno.h>
 #include <stdbool.h>
 #include <string.h>
@@ -21,6 +22,7 @@
 #define BLE_TYPE_END            0x05U
 #define BLE_ACK_TIMEOUT_MS      2000 /* NOTE REVIEW: Tune this timeout for the phone app. */
 #define READ_STORAGE_CMD        0xAAU
+#define PIPELINE_QUIESCE_TIMEOUT_MS 5000U
 
 /* Handle data written by the peer to the NUS RX characteristic. */
 static void rx_received(struct bt_conn *conn, const uint8_t *data, uint16_t len);
@@ -58,7 +60,8 @@ enum ble_app_state {
 static struct {
     uint8_t code;
     bool received_cmd; // Flag to indicate if a command has been received
-    bool verified_cmd; /* Validated session owns the storage mutex until cleanup. */
+    bool verified_cmd; /* Storage extent validated for this session. */
+    bool storage_locked; /* This BLE thread owns storage_mutex until cleanup. */
     bool success_send; // Flag to indicate if the reply has been sent successfully
     uint8_t current_state; // Current state of the BLE application
     bool ack_received; // Flag to indicate if an ACK has been received
@@ -66,7 +69,7 @@ static struct {
     bool ack_timeout; // Flag to indicate if an ACK timeout has occurred
     uint8_t retry_count;
     bool done;
-    bool failed; /* Terminal session error, consumed by the FSM, and disconnected BLE*/
+    bool failed; /* End this session through DONE; the worker thread keeps running. */
 } ble_app_flags;
 
 /* Full 2048-byte page: 2046-byte payload and two stored CRC bytes. */
@@ -81,7 +84,7 @@ static struct {
     uint16_t payload_len;
     int64_t deadline;     /* ACK deadline in uptime milliseconds. */
     uint8_t packet[BLE_PACKET_SIZE]; /* Retained unchanged until ACK or retry. */
-}   ;
+} transfer;
 
 // stuct for a event pushed in queue
 struct ble_rx_event {
@@ -396,7 +399,10 @@ static void fsm_change_state(void)
             }
             break;
         case ble_app_done:
-            ble_app_flags.current_state = ble_app_idle;
+            /* Failed unlock must not allow a new session. */
+            if (!ble_app_flags.storage_locked) {
+                ble_app_flags.current_state = ble_app_idle;
+            }
             break;
         default:
             printk("[BLE_THREAD] Invalid FSM state: %u\n",
@@ -454,11 +460,20 @@ static void received_cmd_handler(struct k_mutex *storage_mutex)
         return;
     }
 
-    int err = k_mutex_lock(storage_mutex, K_FOREVER);
+    /* Acquisition is currently idle. Drain the writer before taking Flash;
+     * holding this mutex while flushing would block the writer itself.
+     */
+    int err = storage_thread_flush(PIPELINE_QUIESCE_TIMEOUT_MS);
+    if (err != 0) {
+        printk("[BLE_THREAD] Storage flush failed: %d\n", err);
+        return;
+    }
+    err = k_mutex_lock(storage_mutex, K_MSEC(PIPELINE_QUIESCE_TIMEOUT_MS));
     if (err != 0) {
         printk("[BLE_THREAD] Storage lock failed: %d\n", err);
         return;
     }
+    ble_app_flags.storage_locked = true;
 
     err = storage_get_data_size(&transfer.storage_end);
     if (err != 0) {
@@ -483,6 +498,9 @@ unlock_storage:
     err = k_mutex_unlock(storage_mutex);
     if (err != 0) {
         printk("[BLE_THREAD] Storage unlock failed: %d\n", err);
+        ble_app_flags.failed = true;
+    } else {
+        ble_app_flags.storage_locked = false;
     }
 }
 
@@ -612,6 +630,7 @@ static void wait_reply_handler(void)
         if (ble_app_flags.retry_count >= BLE_MAX_RETRIES) {
             printk("[BLE_THREAD] Reply retry limit reached\n");
             ble_app_flags.failed = true;
+            return;
         }
         /* Keep success_send, packet, sequence and page cursor for the retry. */
     }
@@ -619,12 +638,17 @@ static void wait_reply_handler(void)
 
 static void done_handler(struct k_mutex *storage_mutex)
 {
-    /* Release after erase or abort; only validated sessions retain the lock. */
-    if (ble_app_flags.verified_cmd) {
+    /* Release Flash on session completion and abort alike. */
+    if (ble_app_flags.storage_locked) {
         int err = k_mutex_unlock(storage_mutex);
+
         if (err != 0) {
             printk("[BLE_THREAD] Storage unlock failed: %d\n", err);
+            ble_app_flags.failed = true;
+            k_sleep(K_MSEC(100));
+            return;
         }
+        ble_app_flags.storage_locked = false;
     }
 
     /* Release the session reference without requesting a BLE disconnect. */

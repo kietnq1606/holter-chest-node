@@ -16,7 +16,7 @@ static struct {
     bool has_active_buffer; /* A buffer has been taken from ready_queue. */
     bool storage_ready; /* Space is available and this thread owns the mutex. */
     bool done; /* The write committed successfully and the mutex was released. */
-    bool failed; /* A fatal error ends the thread without returning its buffer. */
+    bool failed; /* Retain a failed write without reprogramming a partial page. */
 } storage_app_flags;
 
 static struct {
@@ -24,6 +24,7 @@ static struct {
     struct k_msgq *ready_queue; /* Filled buffer pointers handed over by acquisition. */
     struct k_mutex *storage_lock; /* Serializes Flash and metadata access with BLE. */
     uint8_t *active_buffer; /* Owned until committed and returned to free_queue. */
+    bool storage_locked; /* Retry a failed unlock without repeating the write. */
 } storage_thread_resources;
 
 static void fsm_change_state(void);
@@ -49,6 +50,7 @@ int storage_thread_init(void){
     storage_app_flags.failed = false;
 
     storage_thread_resources.active_buffer = NULL;
+    storage_thread_resources.storage_locked = false;
 
     return 0;
 }
@@ -62,10 +64,6 @@ void storage_thread(void *p1, void *p2, void *p3)
     storage_thread_resources.ready_queue = p3;
     while (1) {
         fsm_handle_state();
-        if (storage_app_flags.failed) {
-            /* Stop on error without returning uncommitted data for reuse. */
-            return;
-        }
         fsm_change_state();
     }
 }
@@ -84,12 +82,15 @@ static void fsm_change_state(void){
             break;
 
         case STORAGE_WRITE_DATA:
-            storage_app_flags.current_state = storage_app_flags.done
+            storage_app_flags.current_state = storage_app_flags.done &&
+                                             !storage_thread_resources.storage_locked
                 ? STORAGE_DONE : storage_app_flags.current_state;
             break;
 
         case STORAGE_DONE:
-            storage_app_flags.current_state = STORAGE_IDLE;
+            if (!storage_app_flags.has_active_buffer) {
+                storage_app_flags.current_state = STORAGE_IDLE;
+            }
             break;
         default:
             break;
@@ -119,9 +120,13 @@ static void fsm_handle_state(void){
 /* Take ownership of the next buffer; no Flash access is needed here. */
 static void storage_idle_handler(void){
     /* Block without polling; acquisition transfers ownership through the queue. */
-    k_msgq_get(storage_thread_resources.ready_queue,
+    int err = k_msgq_get(storage_thread_resources.ready_queue,
             &storage_thread_resources.active_buffer,
             K_FOREVER);
+    if (err != 0) {
+        printk("Storage: get buffer failed (%d)\n", err);
+        return;
+    }
     storage_app_flags.has_active_buffer = (storage_thread_resources.active_buffer != NULL);
 }
 /* Hold the mutex only if a complete page can be written. */
@@ -130,52 +135,88 @@ static void storage_wait_write_ready_handler(void)
     storage_app_flags.storage_ready = false;
 
     /* Wait for BLE and serialize the space check with writes and erases. */
-    k_mutex_lock(storage_thread_resources.storage_lock, K_FOREVER);
-    int err = storage_check_write_space();
+    int err;
+
+    if (storage_thread_resources.storage_locked) {
+        err = k_mutex_unlock(storage_thread_resources.storage_lock);
+        if (err != 0) {
+            printk("Storage: unlock failed (%d)\n", err);
+            return;
+        }
+        storage_thread_resources.storage_locked = false;
+    }
+
+    err = k_mutex_lock(storage_thread_resources.storage_lock, K_FOREVER);
+    if (err != 0) {
+        printk("Storage: lock failed (%d)\n", err);
+        return;
+    }
+    storage_thread_resources.storage_locked = true;
+    err = storage_check_write_space();
     if (err != 0) {
         /* BLE needs this mutex to erase storage and make room. */
-        k_mutex_unlock(storage_thread_resources.storage_lock);
+        int unlock_err = k_mutex_unlock(storage_thread_resources.storage_lock);
+        if (unlock_err != 0) {
+            printk("Storage: space check failed (%d), unlock failed (%d)\n",
+                   err, unlock_err);
+            return;
+        }
+        storage_thread_resources.storage_locked = false;
         if (err == -ENOSPC){
+            printk("Storage: no write space\n");
             /* Keep the pending buffer and avoid a busy loop while full. */
             k_sleep(K_MSEC(100));
         }
         else {
             printk("Storage: space check failed (%d)\n", err);
-            storage_app_flags.failed = true;
         }
         return;
     }
     /* Keep the mutex across the transition to prevent an intervening erase. */
     storage_app_flags.storage_ready = true;
 }
-/* Attempt one write; failures retain the buffer and stop further processing. */
+/* Attempt each write once; keep the worker alive and retain failed data. */
 static void storage_write_data_handler(void){
-    /* One synchronous write includes data verification and metadata commit. */
-    int err = storage_write(storage_thread_resources.active_buffer,
-                            STORAGE_BLOCK_DATA_SIZE);
-    if (err != 0) {
-        printk("Storage: write failed (%d)\n", err);
-        storage_app_flags.failed = true;
+    if (!storage_app_flags.done && !storage_app_flags.failed) {
+        /* Do not repeat a write after an unlock error or partial program. */
+        int err = storage_write(storage_thread_resources.active_buffer,
+                                STORAGE_BLOCK_DATA_SIZE);
+        storage_app_flags.done = (err == 0);
+        storage_app_flags.failed = (err != 0);
+
+        if (err != 0) {
+            printk("Storage: write failed (%d)\n", err);
+        }
     }
     /* Release after each write, including failures, so BLE can acquire it. */
-    if (k_mutex_unlock(storage_thread_resources.storage_lock) != 0) {
-        printk("Storage: unlock failed\n");
-        storage_app_flags.failed = true;
-        return;
+    if (storage_thread_resources.storage_locked) {
+        int err = k_mutex_unlock(storage_thread_resources.storage_lock);
+        if (err != 0) {
+            printk("Storage: unlock failed (%d)\n", err);
+            return;
+        }
+        storage_thread_resources.storage_locked = false;
     }
     storage_app_flags.storage_ready = false;
-    storage_app_flags.done = !storage_app_flags.failed;
+    if (storage_app_flags.failed) {
+        /* Recovery is required; never overwrite or recycle uncommitted data. */
+        k_sleep(K_MSEC(100));
+        return;
+    }
 }
 
 /* Transfer ownership back to acquisition and clear the completed cycle flags. */
 static void storage_done_handler(void)
 {
     /* Return only committed data; acquisition overwrites it, so no clearing is needed. */
-    if (k_msgq_put(storage_thread_resources.free_queue,
+    int err = k_msgq_put(storage_thread_resources.free_queue,
                    &storage_thread_resources.active_buffer,
-                   K_FOREVER) == 0) {
-        storage_thread_resources.active_buffer = NULL;
-        storage_app_flags.done = false;
-        storage_app_flags.has_active_buffer = false;
+                   K_FOREVER);
+    if (err != 0) {
+        printk("Storage: return buffer failed (%d)\n", err);
+        return;
     }
+    storage_thread_resources.active_buffer = NULL;
+    storage_app_flags.done = false;
+    storage_app_flags.has_active_buffer = false;
 }

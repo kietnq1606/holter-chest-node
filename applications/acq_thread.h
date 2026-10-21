@@ -1,7 +1,6 @@
 #ifndef APPLICATIONS_ACQUISITION_H_
 #define APPLICATIONS_ACQUISITION_H_
 
-/* Initialize before starting the thread. */
 int acquisition_init(void);
 
 /* Zephyr thread entry. */

@@ -246,7 +246,7 @@ CRC frame BLE là CRC-16/IBM-3740 (CCITT-FALSE): `poly=0x1021`, `init=0xFFFF`, k
 
 # Thiết kế luồng storage
 
-Handler chạy trước, FSM xét chuyển state sau. `failed = true` kết thúc thread và giữ buffer, không phải một state mới.
+Handler chạy trước, FSM xét chuyển state sau. Thread không thoát khi lỗi; `done` chỉ báo lần xử lý đã kết thúc sau khi nhả khóa, không xác nhận ghi thành công.
 
 ## Chuyển trạng thái
 
@@ -257,15 +257,15 @@ stateDiagram-v2
     STORAGE_IDLE --> STORAGE_WAIT_WRITE_READY: has_active_buffer = true
     STORAGE_WAIT_WRITE_READY --> STORAGE_WAIT_WRITE_READY: Đầy - nhả khóa, ngủ 100 ms
     STORAGE_WAIT_WRITE_READY --> STORAGE_WRITE_DATA: storage_ready = true - giữ khóa
-    STORAGE_WAIT_WRITE_READY --> [*]: Lỗi kiểm tra - nhả khóa, log, failed
-    STORAGE_WRITE_DATA --> STORAGE_DONE: Ghi và nhả khóa thành công - done = true
-    STORAGE_WRITE_DATA --> [*]: Lỗi ghi hoặc unlock - log, failed
+    STORAGE_WAIT_WRITE_READY --> STORAGE_WAIT_WRITE_READY: Lỗi khác - nhả khóa, log, kiểm tra lại ngay
+    STORAGE_WRITE_DATA --> STORAGE_DONE: Unlock thành công - done = true, kể cả ghi lỗi
+    STORAGE_WRITE_DATA --> STORAGE_WRITE_DATA: Unlock lỗi - log, done vẫn false
     STORAGE_DONE --> STORAGE_IDLE: Handler trả buffer và reset cờ
 ```
 
 ## Lưu đồ giải thuật của handler
 
-Các nút Return chỉ thoát handler. Thread kiểm tra `failed` trước khi gọi `fsm_change_state()`.
+Các nút Return chỉ thoát handler; vòng lặp luôn gọi `fsm_change_state()` sau đó.
 
 ### `storage_idle_handler()`
 
@@ -291,7 +291,7 @@ flowchart TD
     G --> H{err bằng -ENOSPC?}
     H -- Có --> I[Giữ buffer; ngủ 100 ms]
     I --> R
-    H -- Không --> J[Log mã lỗi; failed = true]
+    H -- Không --> J[Log mã lỗi; không ngủ]
     J --> R
 ```
 
@@ -301,14 +301,14 @@ flowchart TD
 flowchart TD
     A([Bắt đầu - đang giữ mutex]) --> B[Gọi storage_write một lần với 2046 byte]
     B --> C{Ghi và commit thành công?}
-    C -- Không --> D[Log lỗi ghi; failed = true; giữ buffer]
+    C -- Không --> D[Log lỗi ghi]
     C -- Có --> E[Nhả storage_lock]
     D --> E
     E --> F{Unlock thành công?}
-    F -- Không --> G[Log lỗi unlock; failed = true]
+    F -- Không --> G[Log lỗi unlock; giữ nguyên các cờ]
     G --> R([Return])
     F -- Có --> H[storage_ready = false]
-    H --> I[done = phủ định failed]
+    H --> I[done = true]
     I --> R
 ```
 
@@ -316,13 +316,15 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A([Bắt đầu - dữ liệu đã commit]) --> B[Đưa con trỏ vào free_queue bằng K_FOREVER]
+    A([Bắt đầu - done bằng true]) --> B[Đưa con trỏ vào free_queue bằng K_FOREVER]
     B --> C{Trả về 0?}
     C -- Có --> D[active_buffer = NULL]
     D --> E[done = false; has_active_buffer = false]
     E --> R([Return])
     C -- Không --> R
 ```
+
+Lưu ý theo code hiện tại: ghi lỗi nhưng unlock thành công vẫn trả buffer, nên dữ liệu chưa lưu có thể bị ghi đè. Lỗi kiểm tra khác `-ENOSPC` lặp ngay; unlock lỗi khiến lượt sau gọi ghi lại mà không lấy lại khóa.
 
 ## Thiết kế đề xuất: hai buffer giữa acquisition và storage
 
@@ -331,7 +333,7 @@ Phần này mô tả phương án để review, chưa xác nhận đã triển k
 | Thread | Nhiệm vụ | Quyền sở hữu buffer |
 |---|---|---|
 | Thread thu, tạo bằng `acq_tcb` | Đọc cảm biến và đóng gói dữ liệu vào buffer | Chỉ ghi buffer đã lấy từ `free_queue` |
-| Thread lưu, tạo bằng `storage_tcb` | Lấy buffer đầy và ghi xuống storage | Giữ buffer từ lúc lấy khỏi `ready_queue` đến khi ghi và commit hoàn tất |
+| Thread lưu, tạo bằng `storage_tcb` | Lấy buffer đầy và ghi xuống storage | Giữ buffer từ lúc lấy khỏi `ready_queue` đến lúc trả ở DONE |
 
 ### Cấp phát và truyền tham số
 
@@ -346,7 +348,7 @@ Phần này mô tả phương án để review, chưa xác nhận đã triển k
 
 | Queue | Nội dung | Bên đưa vào | Bên lấy ra |
 |---|---|---|---|
-| `free_queue` | Con trỏ buffer rảnh, được phép ghi đè dữ liệu cũ | Main khởi tạo; storage trả buffer sau khi ghi thành công | Acquisition |
+| `free_queue` | Con trỏ buffer rảnh, được phép ghi đè dữ liệu cũ | Main khởi tạo; storage trả buffer ở DONE, kể cả ghi lỗi nếu unlock thành công | Acquisition |
 | `ready_queue` | Con trỏ buffer đầy, đang chờ ghi xuống storage | Acquisition | Storage |
 
 Buffer rảnh không có nghĩa là toàn bộ byte bằng 0. Acquisition điền đủ dữ liệu mới nên không cần xóa buffer trước mỗi lần dùng.
@@ -395,10 +397,10 @@ sequenceDiagram
 ### Quy tắc sở hữu và xử lý lỗi
 
 - Một buffer chỉ ở một nơi: trong free_queue, thuộc acquisition, trong ready_queue hoặc thuộc storage. Không đưa cùng con trỏ vào queue hai lần.
-- Acquisition không sửa buffer sau khi bàn giao; storage không trả buffer trước khi thao tác ghi đồng bộ kết thúc.
+- Acquisition không sửa buffer sau khi bàn giao; storage không trả buffer trước khi thao tác ghi đồng bộ kết thúc; code hiện tại không yêu cầu ghi thành công để trả buffer.
 - Không cần mutex riêng cho dữ liệu buffer nếu tuân thủ quyền sở hữu. Mutex storage bảo vệ Flash và metadata giữa storage thread và BLE thread.
 - Khi cả hai buffer đang bận, acquisition không được ghi đè. Cần chọn chính sách quá tải: chờ nếu cảm biến cho phép, dừng thu hoặc báo mất dữ liệu. Hai buffer không bảo đảm thu liên tục nếu ghi Flash quá chậm.
-- Ghi lỗi: không tự trả buffer như thể đã lưu thành công. Giữ dữ liệu, báo lỗi và quyết định retry hoặc dừng thu.
+- Ghi lỗi: code hiện tại chỉ log và vẫn trả buffer nếu nhả khóa thành công. Giữ dữ liệu chờ phục hồi là yêu cầu chưa triển khai.
 - `storage_write()` hiện chỉ nhận đúng 2046 byte. Buffer cuối chưa đầy cần quy tắc đóng gói/padding và biểu diễn độ dài hợp lệ trước khi triển khai; không gửi độ dài tùy ý vào storage service.
 - Hai buffer cần 4092 byte RAM dữ liệu, chưa tính queue và đối tượng kernel. Không có bản sao payload trong queue; storage service hiện vẫn dùng page_buffer nội bộ để thêm CRC và xác minh ghi.
 

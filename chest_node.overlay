@@ -1,30 +1,123 @@
+/*
+ad8232 
+P0.22 - lo - plus
+P0.24 - lo - minus
+P0.29 - out
+----------------
+BMI323
+P1.04 - int1
+P0.11 - scl
+P1.00 - sda
+---------------
+Led
+P0.20 - led1
+P0.17 - led2
+P0.08 - led3
+---------------
+W25N01GV
+P0.09 - cs
+P1.01 - sck
+P1.02 - miso
+P1.07 - mosi
+--------------
+Switch 4
+P0.10 - sw1 
+P1.11 - sw2
+P1.13 - sw3
+P1.15 - sw4
+-------------
+Battery Monitoring 
+P0.31 - bat
+--------------
+Bandpass filter
+P0.02 - out-filter (analog signal)
+-------------
+74HC4053D/S400118
+P0.06 - SEL_PULSE
+P1.06 - SEL_CAL
+
+Mode 
+SEL_CAL SEL_PULSE     mode         Điện áp vi sai      
+1           x        Đo ecg gốc 
+1           x    
+0           0        calibrate       0 mV
+0           1        calibrate       +1 mV
+
+*/
+
 #include <zephyr/dt-bindings/adc/nrf-saadc.h>
 #include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/input/input-event-codes.h>
 #include <zephyr/dt-bindings/i2c/i2c.h>
+#include <zephyr/dt-bindings/pinctrl/nrf-pinctrl.h>
 
 / {
-    aliases {
-        storage-flash = &w25n01gv;
+    /* Debug LEDs. */
+    debug_leds {
+        compatible = "gpio-leds";
+        /* Assumes LEDs turn on when driven low. */
+        debug_led1: led_1 {
+            gpios = <&gpio0 20 GPIO_ACTIVE_LOW>;
+        };
+        debug_led2: led_2 {
+            gpios = <&gpio0 17 GPIO_ACTIVE_LOW>;
+        };
+        debug_led3: led_3 {
+            gpios = <&gpio0 8 GPIO_ACTIVE_LOW>;
+        };
+    };
+
+    /* Debug switches. */
+    debug_switches {
+        compatible = "gpio-keys";
+        /* Assumes switches connect the inputs to ground. */
+        debug_sw1: switch_1 {
+            gpios = <&gpio0 10 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+            zephyr,code = <INPUT_KEY_0>;
+        };
+        debug_sw2: switch_2 {
+            gpios = <&gpio1 11 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+            zephyr,code = <INPUT_KEY_1>;
+        };
+        debug_sw3: switch_3 {
+            gpios = <&gpio1 13 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+            zephyr,code = <INPUT_KEY_2>;
+        };
+        debug_sw4: switch_4 {
+            gpios = <&gpio1 15 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+            zephyr,code = <INPUT_KEY_3>;
+        };
     };
 
     ad8232: ad8232 {
         compatible = "adi,ad8232";              /* Bind node to AD8232 driver */
-
         io-channels = <&adc 0>;                 /* Connect AD8232 output to ADC */
-
         lo-plus-gpios  = <&gpio0 22 GPIO_ACTIVE_HIGH>;  /* Read LO+ status */
         lo-minus-gpios = <&gpio0 24 GPIO_ACTIVE_HIGH>;  /* Read LO- status */
 
         status = "okay";                        /* Enable device */
     };
+
+    /* Battery and filtered ECG inputs, and calibration control outputs. */
+    zephyr,user {
+        io-channels = <&adc 1>, <&adc 2>;
+        io-channel-names = "battery", "filtered-ecg";
+
+        sel-cal-gpios = <&gpio1 6 GPIO_ACTIVE_HIGH>;
+        sel-pulse-gpios = <&gpio0 6 GPIO_ACTIVE_HIGH>;
+    };
+
+
 };
 
+/* ADC inputs for raw ECG, battery voltage, and filtered ECG. */
 &adc {
     status = "okay";                            /* Enable ADC peripheral */
 
     #address-cells = <1>;
     #size-cells = <0>;
 
+    /* AD8232 output: P0.29 / AIN5. */
     channel@0 {
         reg = <0>;                              /* Select ADC channel 0 */
 
@@ -32,21 +125,44 @@
         zephyr,reference = "ADC_REF_INTERNAL";  /* Use internal ADC reference */
         zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>; /* Set acquisition time */
 
-        zephyr,input-positive = <NRF_SAADC_AIN0>; /* Select analog input */
+        zephyr,input-positive = <NRF_SAADC_AIN5>; /* Select analog input ~ P029*/ 
 
         zephyr,resolution = <12>;               /* Set 12-bit resolution */
     };
+
+    /* Battery: P0.31 / AIN7. */
+    channel@1 {
+        reg = <1>;
+        zephyr,gain = "ADC_GAIN_1_6";
+        zephyr,reference = "ADC_REF_INTERNAL";
+        zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+        zephyr,input-positive = <NRF_SAADC_AIN7>;
+        zephyr,resolution = <12>;
+    };
+
+    /* Filter output: P0.02 / AIN0. */
+    channel@2 {
+        reg = <2>;
+        zephyr,gain = "ADC_GAIN_1_6";
+        zephyr,reference = "ADC_REF_INTERNAL";
+        zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+        zephyr,input-positive = <NRF_SAADC_AIN0>;
+        zephyr,resolution = <12>;
+    };
+
+
 };
 
 &i2c0 {
     status = "okay";                            /* Enable I2C controller */
 
-    pinctrl-0 = <&i2c0_default>;                /* Use normal I2C pin state */
-    pinctrl-1 = <&i2c0_sleep>;                  /* Use low-power pin state */
+    pinctrl-0 = <&bmi323_i2c_default>;                /* Use normal I2C pin state */
+    pinctrl-1 = <&bmi323_i2c_sleep>;                  /* Use low-power pin state */
     pinctrl-names = "default", "sleep";         /* Define available pin states */
 
     clock-frequency = <I2C_BITRATE_STANDARD>;   /* Set I2C speed */
 
+    /* BMI323 motion sensor on I2C address 0x68. */
     bmi323: bmi323@68 {
         compatible = "bosch,bmi323";            /* Bind node to BMI323 driver */
 
@@ -63,10 +179,16 @@
 &uart0 {
     status = "disabled";
 };
+
+/* SPI0 shares hardware with I2C0 on nRF52840. */
+&spi0 {
+    status = "disabled";
+};
+
 &spi2 {
     status = "okay";
-    pinctrl-0 = <&spi2_default>;
-    pinctrl-1 = <&spi2_sleep>;
+    pinctrl-0 = <&w25n01gv_spi_default>;
+    pinctrl-1 = <&w25n01gv_spi_sleep>;
     pinctrl-names = "default", "sleep";
 
     /* Active-low chip select for the NAND. */
@@ -88,4 +210,39 @@
         reset-duration-max = <500>;
         status = "okay";
     };
+};
+
+/* I2C and SPI signal pins. */
+&pinctrl {
+    bmi323_i2c_default: bmi323_i2c_default {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SCL, 0, 11)>,
+                    <NRF_PSEL(TWIM_SDA, 1, 0)>;
+        };
+    };
+    /* Low-power I2C pin configuration. */
+    bmi323_i2c_sleep: bmi323_i2c_sleep {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SCL, 0, 11)>,
+                    <NRF_PSEL(TWIM_SDA, 1, 0)>;
+            low-power-enable;
+        };
+    };
+
+    w25n01gv_spi_default: w25n01gv_spi_default {
+        group1 {
+            psels = <NRF_PSEL(SPIM_SCK, 1, 1)>,
+                    <NRF_PSEL(SPIM_MISO, 1, 2)>,
+                    <NRF_PSEL(SPIM_MOSI, 1, 7)>;
+        };
+    };
+    w25n01gv_spi_sleep: w25n01gv_spi_sleep {
+        group1 {
+            psels = <NRF_PSEL(SPIM_SCK, 1, 1)>,
+                    <NRF_PSEL(SPIM_MISO, 1, 2)>,
+                    <NRF_PSEL(SPIM_MOSI, 1, 7)>;
+            low-power-enable;
+        };
+    };  
+
 };
