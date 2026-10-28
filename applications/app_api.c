@@ -129,7 +129,7 @@ void system_run(){
 
     /* Start order does not guarantee initialization completion. */
     k_thread_start(&storage_tcb);
-    /* Acquisition must wait for START and storage readiness. */
+    /* Acquisition starts immediately and waits when no free buffer is available. */
     k_thread_start(&acq_tcb);
     k_thread_start(&ble_tcb);
 

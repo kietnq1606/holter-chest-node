@@ -1,7 +1,6 @@
 #include "ble_thread.h"
 #include "nus.h"
 #include "storage.h"
-#include "storage_thread.h"
 #include <errno.h>
 #include <stdbool.h>
 #include <string.h>
@@ -22,7 +21,7 @@
 #define BLE_TYPE_END            0x05U
 #define BLE_ACK_TIMEOUT_MS      2000 /* NOTE REVIEW: Tune this timeout for the phone app. */
 #define READ_STORAGE_CMD        0xAAU
-#define PIPELINE_QUIESCE_TIMEOUT_MS 5000U
+#define STORAGE_LOCK_TIMEOUT_MS 5000U
 
 /* Handle data written by the peer to the NUS RX characteristic. */
 static void rx_received(struct bt_conn *conn, const uint8_t *data, uint16_t len);
@@ -460,15 +459,8 @@ static void received_cmd_handler(struct k_mutex *storage_mutex)
         return;
     }
 
-    /* Acquisition is currently idle. Drain the writer before taking Flash;
-     * holding this mutex while flushing would block the writer itself.
-     */
-    int err = storage_thread_flush(PIPELINE_QUIESCE_TIMEOUT_MS);
-    if (err != 0) {
-        printk("[BLE_THREAD] Storage flush failed: %d\n", err);
-        return;
-    }
-    err = k_mutex_lock(storage_mutex, K_MSEC(PIPELINE_QUIESCE_TIMEOUT_MS));
+    /* Pending writes wait here; acquisition pauses when its free buffers run out. */
+    int err = k_mutex_lock(storage_mutex, K_MSEC(STORAGE_LOCK_TIMEOUT_MS));
     if (err != 0) {
         printk("[BLE_THREAD] Storage lock failed: %d\n", err);
         return;

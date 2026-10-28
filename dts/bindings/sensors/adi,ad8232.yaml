@@ -2,6 +2,10 @@ description: "Analog Devices AD8232 Heart Rate Monitor Front-End"
 compatible: "adi,ad8232"
 include: base.yaml
 properties:
+  sample-timer:
+    type: phandle
+    required: true
+    description: Dedicated hardware TIMER reserved for 500 Hz SAADC triggering
   io-channels:
     type: phandle-array
     required: true

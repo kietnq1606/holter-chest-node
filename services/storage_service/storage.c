@@ -45,7 +45,7 @@ static int commit_metadata(uint32_t next_write_offset);
  */
 static int storage_write_marker(void);
 /* Read one page into the shared buffer and check its erased state. */
-int block_is_erased(uint32_t address, bool *erased);
+static int block_is_erased(uint32_t address, bool *erased);
 /* Recover the latest valid metadata and account for used metadata pages. */
 static int storage_recover_metadata(void);
 /* Skip programmed data pages beyond the recovered write offset. */
@@ -199,7 +199,7 @@ int storage_read(uint32_t offset, uint8_t *buffer, size_t length)
 /*
  * Erase all data and commit empty metadata.
  * Power-loss recovery during erase is not guaranteed.
- * The caller must stop acquisition and serialize storage operations.
+ * The caller must serialize all storage operations.
  */
 int storage_erase_all_datas(void){
     int ret;
@@ -240,6 +240,7 @@ int storage_erase_all_datas(void){
         printk("Storage: metadata reset failed (%d)\n", ret);
         return ret;
     }
+    recovered = true;
     return 0;
 }
 

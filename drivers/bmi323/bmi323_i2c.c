@@ -187,28 +187,28 @@ static int bmi323_init(const struct device *dev)
 
     k_msleep(BMI323_RESET_DELAY_MS);
 
-    /* Configure accelerometer for 50 Hz and +/-4 g. */
-    value = IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, ODR, HZ50) |
+    /* 12.5 Hz low-power, +/-4 g; zero averaging bits mean one sample. */
+    value = IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, ODR, HZ12P5) |
             IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, RANGE, G4) |
-            IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, MODE, HPWR);
+            IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, MODE, LPWR);
     ret = bmi323_write_word(config, IMU_BOSCH_BMI323_REG_ACC_CONF, value);
     if (ret != 0) {
         return ret;
     }
 
-    /* Configure gyroscope for 50 Hz and +/-500 dps. */
-    value = IMU_BOSCH_BMI323_REG_VALUE(GYRO_CONF, ODR, HZ50) |
+    /* 12.5 Hz low-power, +/-500 dps, without internal averaging. */
+    value = IMU_BOSCH_BMI323_REG_VALUE(GYRO_CONF, ODR, HZ12P5) |
             IMU_BOSCH_BMI323_REG_VALUE(GYRO_CONF, RANGE, DPS500) |
-            IMU_BOSCH_BMI323_REG_VALUE(GYRO_CONF, MODE, HPWR);
+            IMU_BOSCH_BMI323_REG_VALUE(GYRO_CONF, MODE, LPWR);
     ret = bmi323_write_word(config, IMU_BOSCH_BMI323_REG_GYRO_CONF, value);
     if (ret != 0) {
         return ret;
     }
 
-    /* Drive INT1 active-high in push-pull mode. */
+    /* Keep INT1 output disabled while using polling. */
     value = IMU_BOSCH_BMI323_REG_VALUE(IO_INT_CTRL, INT1_LVL, ACT_HIGH) |
             IMU_BOSCH_BMI323_REG_VALUE(IO_INT_CTRL, INT1_OD, PUSH_PULL) |
-            IMU_BOSCH_BMI323_REG_VALUE(IO_INT_CTRL, INT1_OUTPUT_EN, EN);
+            IMU_BOSCH_BMI323_REG_VALUE(IO_INT_CTRL, INT1_OUTPUT_EN, DIS);
     ret = bmi323_write_word(config, IMU_BOSCH_BMI323_REG_IO_INT_CTRL, value);
     if (ret != 0) {
         return ret;
@@ -220,20 +220,20 @@ static int bmi323_init(const struct device *dev)
         return ret;
     }
 
-    /* Route accelerometer data-ready to INT1. */
-    value = IMU_BOSCH_BMI323_REG_VALUE(INT_MAP2, ACC_DRDY_INT, INT1);
+    /* Acquisition polls the latest sample; no data-ready interrupt is needed. */
+    value = IMU_BOSCH_BMI323_REG_VALUE(INT_MAP2, ACC_DRDY_INT, DIS);
     ret = bmi323_write_word(config, IMU_BOSCH_BMI323_REG_INT_MAP2, value);
     if (ret != 0) {
         return ret;
     }
 
-    ret = gpio_pin_interrupt_configure_dt(&config->int1, GPIO_INT_EDGE_TO_ACTIVE);
+    ret = gpio_pin_interrupt_configure_dt(&config->int1, GPIO_INT_DISABLE);
     if (ret != 0) {
         return ret;
     }
 
     k_msleep(BMI323_SENSOR_STARTUP_MS);
-    printk("BMI323: ready, accel=4g gyro=500dps ODR=50Hz\n");
+    printk("BMI323: ready, accel=4g gyro=500dps ODR=12.5Hz low-power polling\n");
 
     return 0;
 }

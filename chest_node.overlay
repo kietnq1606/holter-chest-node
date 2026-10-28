@@ -92,6 +92,7 @@ SEL_CAL SEL_PULSE     mode         Điện áp vi sai
     ad8232: ad8232 {
         compatible = "adi,ad8232";              /* Bind node to AD8232 driver */
         io-channels = <&adc 0>;                 /* Connect AD8232 output to ADC */
+        sample-timer = <&timer2>;               /* Dedicated ECG sampling timer */
         lo-plus-gpios  = <&gpio0 22 GPIO_ACTIVE_HIGH>;  /* Read LO+ status */
         lo-minus-gpios = <&gpio0 24 GPIO_ACTIVE_HIGH>;  /* Read LO- status */
 
@@ -108,6 +109,11 @@ SEL_CAL SEL_PULSE     mode         Điện áp vi sai
     };
 
 
+};
+
+/* Reserved for the AD8232 nrfx driver, not a Zephyr counter device. */
+&timer2 {
+    status = "reserved";
 };
 
 /* ADC inputs for raw ECG, battery voltage, and filtered ECG. */

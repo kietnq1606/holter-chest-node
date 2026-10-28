@@ -4,22 +4,25 @@ find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(chest_node)
 
 target_sources(app PRIVATE
-    drivers/signal_mux/signal_mux.c
-    drivers/debug_io/debug_io.c
-    #core/main.c
-    #test/w25n01gv_test.c
-    test/ad8232_test.c
+    core/main.c
+    applications/app_api.c
+    applications/acq_thread.c
+    applications/storage_thread.c
+    applications/ble_thread.c
+    drivers/ad8232/ad8232.c
+    drivers/bmi323/bmi323_i2c.c
+    services/signal_mux/signal_mux.c
+    services/debug_io/debug_io.c
     services/storage_service/storage.c
-    service/ble_service/nus.c
-
+    services/ble_service/nus.c
 )
 target_include_directories(app PRIVATE
-    drivers/signal_mux
-    drivers/debug_io
     core
+    applications
     drivers/ad8232
     drivers/bmi323
-    drivers/w25n
+    services/signal_mux
+    services/debug_io
     services/ble_service
     services/storage_service
 )
