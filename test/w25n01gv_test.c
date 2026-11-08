@@ -8,10 +8,14 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/flash.h>
 #include <zephyr/kernel.h>
+#include <zephyr/sys/byteorder.h>
+#include <zephyr/sys/crc.h>
 #include <zephyr/sys/printk.h>
 
+#include "../services/storage_service/storage.h"
+
 #define W25N01GV_NODE             DT_NODELABEL(w25n01gv)
-#define W25N01GV_PAGE_SIZE        2048U
+#define W25N01GV_PAGE_SIZE        STORAGE_BLOCK_SIZE
 #define W25N01GV_ERASE_BLOCK_SIZE (128U * 1024U)
 #define TEST_OFFSET               0U
 
@@ -21,9 +25,14 @@ static uint8_t read_buffer[W25N01GV_PAGE_SIZE];
 
 static void fill_test_pattern(void)
 {
-	for (size_t i = 0; i < sizeof(write_buffer); ++i) {
+	for (size_t i = 0; i < STORAGE_BLOCK_DATA_SIZE; ++i) {
 		write_buffer[i] = (uint8_t)((i * 31U + 7U) & 0xFFU);
 	}
+
+	/* Match storage_write(): payload CRC16 with a little-endian trailer. */
+	uint16_t crc = crc16_ccitt(0xFFFFU, write_buffer, STORAGE_BLOCK_DATA_SIZE);
+
+	sys_put_le16(crc, write_buffer + STORAGE_BLOCK_DATA_SIZE);
 }
 
 static bool buffer_is_erased(const uint8_t *buffer, size_t length)
@@ -44,6 +53,8 @@ int main(void)
 
 	printk("W25N01GV test start\n");
 	printk("WARNING: test erases block at offset 0x%08x\n", TEST_OFFSET);
+	printk("Storage block: payload=%u CRC=2 total=%u bytes\n",
+	       STORAGE_BLOCK_DATA_SIZE, STORAGE_BLOCK_SIZE);
 
 	if (!device_is_ready(flash)) {
 		printk("FAIL: flash device is not ready\n");
@@ -73,6 +84,18 @@ int main(void)
 		printk("FAIL: read after write returned %d\n", ret);
 		return ret;
 	}
+
+	uint16_t stored_crc = sys_get_le16(read_buffer + STORAGE_BLOCK_DATA_SIZE);
+	uint16_t calculated_crc = crc16_ccitt(0xFFFFU, read_buffer,
+					    STORAGE_BLOCK_DATA_SIZE);
+
+	if (stored_crc != calculated_crc) {
+		printk("FAIL: storage CRC16 stored=0x%04x calculated=0x%04x\n",
+		       stored_crc, calculated_crc);
+		return -EIO;
+	}
+	printk("PASS: storage CRC16 stored=0x%04x calculated=0x%04x\n",
+	       stored_crc, calculated_crc);
 
 	if (memcmp(write_buffer, read_buffer, sizeof(write_buffer)) != 0) {
 		printk("FAIL: data read back does not match written data\n");
