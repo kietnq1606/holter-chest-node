@@ -4,10 +4,10 @@ find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(chest_node)
 
 target_sources(app PRIVATE
-    test/w25n01gv_test.c
-    #test/bmi_test.c
-    #drivers/bmi323/bmi323_i2c.c
+    test/sw_led_test.c
+    services/debug_io/debug_io.c
 )
-# target_include_directories(app PRIVATE
-#     drivers/bmi323
-# )
+
+target_include_directories(app PRIVATE
+    services/debug_io
+) )
