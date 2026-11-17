@@ -192,6 +192,7 @@ SEL_CAL SEL_PULSE     mode         Điện áp vi sai
 };
 
 &spi2 {
+    compatible = "nordic,nrf-spim";
     status = "okay";
     pinctrl-0 = <&w25n01gv_spi_default>;
     pinctrl-1 = <&w25n01gv_spi_sleep>;
@@ -204,16 +205,16 @@ SEL_CAL SEL_PULSE     mode         Điện áp vi sai
         compatible = "jedec,spi-nand";
         reg = <0>; /* Uses chip-select entry 0. */
         /* nRF52840 SPIM2 limit; W25N01GV supports a higher clock. */
-        spi-max-frequency = <8000000>;
+        spi-max-frequency = <2000000>;
         jedec-id = [ef aa 21]; /* W25N01GV manufacturer and device ID. */
         size-bytes = <134217728>; /* Total capacity: 1 Gbit = 128 MiB. */
         erase-block-size = <131072>; /* Physical erase block: 64 × 2048-byte pages. */
         write-block-size = <2048>; /* NAND page-program size. */
         /* Maximum operation times in microseconds; follow the chip datasheet. */
-        block-erase-duration-max = <10000>;
-        page-program-duration-max = <700>;
-        page-read-duration-max = <100>;
-        reset-duration-max = <500>;
+        block-erase-duration-max = <20000>;
+        page-program-duration-max = <5000>;
+        page-read-duration-max = <2000>;
+        reset-duration-max = <2000>;
         status = "okay";
     };
 };

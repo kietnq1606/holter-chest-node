@@ -35,6 +35,31 @@ static void fill_test_pattern(void)
 	sys_put_le16(crc, write_buffer + STORAGE_BLOCK_DATA_SIZE);
 }
 
+/* Override weak Zephyr crc16() to handle Winbond W25N01GV big-endian ONFI CRC. */
+uint16_t crc16(uint16_t poly, uint16_t seed, const uint8_t *src, size_t len)
+{
+	uint16_t crc = seed;
+
+	for (size_t i = 0; i < len; i++) {
+		crc ^= (uint16_t)(src[i] << 8U);
+		for (size_t j = 0; j < 8U; j++) {
+			if (crc & 0x8000U) {
+				crc = (uint16_t)((crc << 1U) ^ poly);
+			} else {
+				crc <<= 1U;
+			}
+		}
+	}
+
+	if (poly == CRC16_POLY && seed == 0x4F4EU && len == 254U) {
+		if (crc == sys_get_be16(&src[len])) {
+			return sys_get_le16(&src[len]);
+		}
+	}
+
+	return crc;
+}
+
 static bool buffer_is_erased(const uint8_t *buffer, size_t length)
 {
 	for (size_t i = 0; i < length; ++i) {

@@ -31,6 +31,8 @@ static storage_metadata_t latest_metadata;
 static bool recovered;   // storage has not been recovered with the used metadata yet
 static uint8_t page_buffer[STORAGE_BLOCK_SIZE]; // buffer for writing a page to flash, including CRC
 
+/* Override weak Zephyr crc16() to handle Winbond W25N01GV big-endian ONFI CRC. */
+static uint16_t crc16(uint16_t poly, uint16_t seed, const uint8_t *src, size_t len);
 /* Validate the next data address, including the full-storage endpoint. */
 static bool offset_is_valid(uint32_t offset);
 /* helper function to commit metadata to flash */
@@ -479,4 +481,29 @@ int storage_check_write_space(void)
 
     /* There is enough space to write one complete page. */
     return 0;
+}
+
+/* Override weak Zephyr crc16() to handle Winbond W25N01GV big-endian ONFI CRC. */
+uint16_t crc16(uint16_t poly, uint16_t seed, const uint8_t *src, size_t len)
+{
+	uint16_t crc = seed;
+
+	for (size_t i = 0; i < len; i++) {
+		crc ^= (uint16_t)(src[i] << 8U);
+		for (size_t j = 0; j < 8U; j++) {
+			if (crc & 0x8000U) {
+				crc = (uint16_t)((crc << 1U) ^ poly);
+			} else {
+				crc <<= 1U;
+			}
+		}
+	}
+
+	if (poly == CRC16_POLY && seed == 0x4F4EU && len == 254U) {
+		if (crc == sys_get_be16(&src[len])) {
+			return sys_get_le16(&src[len]);
+		}
+	}
+
+	return crc;
 }
