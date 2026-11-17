@@ -3,17 +3,16 @@
 #include <zephyr/sys/printk.h>
 #include "ad8232.h"
 
-#define AD8232_NODE DT_NODELABEL(ad8232)
+static const struct device *const ad8232_dev = DEVICE_DT_GET(DT_NODELABEL(ad8232));
 
 int main(void)
 {
-    const struct device *dev = DEVICE_DT_GET(AD8232_NODE);
 
     int16_t ecg;
     bool lo_plus;
     bool lo_minus;
 
-    if (!device_is_ready(dev)) {
+    if (!device_is_ready(ad8232_dev)) {
         return 0;
     }
 
