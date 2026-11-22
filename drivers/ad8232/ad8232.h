@@ -109,6 +109,3 @@ static inline int ad8232_buffer_release(const struct device *dev,
 }
 #endif
 #endif /* AD8232_H */
-
-
-#

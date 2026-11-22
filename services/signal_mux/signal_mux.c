@@ -91,3 +91,11 @@ int signal_mux_mode2(void)
 {
     return signal_mux_set_mode(SIGNAL_MUX_ECG);
 }
+
+/*Mode 3: no function (SEL_CAL=1, SEL_PULSE=1)*/
+int signal_mux_mode3(void){
+    int err;
+    err = gpio_pin_set_dt(&sel_cal, 1);
+    err = gpio_pin_set_dt(&sel_pulse, 1);
+    return err;
+}

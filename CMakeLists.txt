@@ -4,10 +4,14 @@ find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(chest_node)
 
 target_sources(app PRIVATE
-    test/sw_led_test.c
+    test/filter_raw_test.c
+    drivers/ad8232/ad8232.c
+    services/signal_mux/signal_mux.c
     services/debug_io/debug_io.c
 )
 
 target_include_directories(app PRIVATE
+    drivers/ad8232
+    services/signal_mux
     services/debug_io
-) 
+)

@@ -13,5 +13,7 @@ int signal_mux_mode0(void);
 int signal_mux_mode1(void);
 /* Mode 2: ECG electrodes (SEL_CAL=1, SEL_PULSE=0). */
 int signal_mux_mode2(void);
+/*Mode 3: no function (SEL_CAL=1, SEL_PULSE=1)*/
+int signal_mux_mode3(void);
 
 #endif /* SIGNAL_MUX_H_ */

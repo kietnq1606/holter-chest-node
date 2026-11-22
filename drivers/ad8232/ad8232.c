@@ -14,14 +14,16 @@
 
 #define AD8232_SAMPLE_RATE     500U
 #define AD8232_TIMER_HZ        1000000U
-#define AD8232_BUFFER_SAMPLES  50U
+#define AD8232_CHANNEL_COUNT   2U
+#define AD8232_FRAME_SAMPLES   50U
+#define AD8232_BUFFER_SAMPLES  (AD8232_FRAME_SAMPLES * AD8232_CHANNEL_COUNT)
 #define AD8232_BUFFER_COUNT    2U
 #define AD8232_STOP_TIMEOUT_US 1000U
-/* Resolve io-channels = <&adc N> to the controller and its channel@N settings. */
-#define AD8232_ADC_NODE(inst)  DT_IO_CHANNELS_CTLR(DT_DRV_INST(inst))
-#define AD8232_CHANNEL(inst) \
+/* Resolve io-channels = <&adc N>, <&adc M> to the controller and channel@ settings. */
+#define AD8232_ADC_NODE(inst)  DT_IO_CHANNELS_CTLR_BY_IDX(DT_DRV_INST(inst), 0)
+#define AD8232_CHANNEL_BY_IDX(inst, idx) \
     DT_CHILD(AD8232_ADC_NODE(inst), \
-             UTIL_CAT(channel_, DT_IO_CHANNELS_INPUT(DT_DRV_INST(inst))))
+             UTIL_CAT(channel_, DT_IO_CHANNELS_INPUT_BY_IDX(DT_DRV_INST(inst), idx)))
 
 /* The nRF52840 has one SAADC and nrfx has one SAADC callback context. */
 BUILD_ASSERT(DT_NUM_INST_STATUS_OKAY(DT_DRV_COMPAT) == 1);
@@ -45,7 +47,9 @@ struct ad8232_config {
     struct gpio_dt_spec lo_plus;
     struct gpio_dt_spec lo_minus;
     nrfx_analog_input_t input;
-    uint8_t channel_id;
+    uint8_t ch_raw;
+    nrfx_analog_input_t input_filter;
+    uint8_t ch_filter;
 };
 
 /* Mutable state for this device instance, accessed through dev->data. */
@@ -157,9 +161,10 @@ static int prepare_saadc(const struct device *dev)
 {
     const struct ad8232_config *config = dev->config;
     struct ad8232_data *data = dev->data;
-    nrfx_saadc_channel_t channel =
-        NRFX_SAADC_DEFAULT_CHANNEL_SE(config->input, config->channel_id);
-
+    nrfx_saadc_channel_t channels[AD8232_CHANNEL_COUNT] = {
+        NRFX_SAADC_DEFAULT_CHANNEL_SE(config->input, config->ch_raw),
+        NRFX_SAADC_DEFAULT_CHANNEL_SE(config->input_filter, config->ch_filter),
+    };
     int err = nrfx_saadc_init(DT_IRQ(AD8232_ADC_NODE(0), priority));
     if (err != 0) {
         /* Do not uninitialize SAADC if another owner made init fail. */
@@ -171,10 +176,12 @@ static int prepare_saadc(const struct device *dev)
      * 12-bit raw scale: 0.6 / (1/6) / 4096 = 878.90625 uV/count at ADC input.
      * The driver returns raw counts; baseline and ECG gain stay in the application.
      */
-    channel.channel_config.gain = NRF_SAADC_GAIN1_6;
-    channel.channel_config.reference = NRF_SAADC_REFERENCE_INTERNAL;
-    channel.channel_config.acq_time = NRF_SAADC_ACQTIME_10US;
-    err = nrfx_saadc_channels_config(&channel, 1);
+    for (size_t i = 0; i < AD8232_CHANNEL_COUNT; i++) {
+        channels[i].channel_config.gain = NRF_SAADC_GAIN1_6;
+        channels[i].channel_config.reference = NRF_SAADC_REFERENCE_INTERNAL;
+        channels[i].channel_config.acq_time = NRF_SAADC_ACQTIME_10US;
+    }
+    err = nrfx_saadc_channels_config(channels, AD8232_CHANNEL_COUNT);
     if (err == 0) {
         /* SAADC offset calibration is not AD8232 analog gain calibration. */
         err = nrfx_saadc_offset_calibrate(NULL);
@@ -276,9 +283,10 @@ static int ad8232_start_impl(const struct device *dev)
     /* SAMPLE comes from TIMER/PPI; END->START is also a hardware PPI link. */
     advanced.internal_timer_cc = 0;
     advanced.start_on_end = false;
-    err = nrfx_saadc_advanced_mode_set(BIT(config->channel_id),
-                                      NRF_SAADC_RESOLUTION_12BIT,
-                                      &advanced, ad8232_saadc_callback);
+
+    err = nrfx_saadc_advanced_mode_set(BIT(config->ch_raw) | BIT(config->ch_filter),
+                                       NRF_SAADC_RESOLUTION_12BIT,
+                                       &advanced, ad8232_saadc_callback);
     if (err != 0) {
         (void)stop_locked(data);
         goto out;
@@ -454,7 +462,7 @@ static int ad8232_read_raw_impl(const struct device *dev, int16_t *value)
     if (err != 0) {
         goto out;
     }
-    err = nrfx_saadc_simple_mode_set(BIT(config->channel_id),
+    err = nrfx_saadc_simple_mode_set(BIT(config->ch_raw),
                                     NRF_SAADC_RESOLUTION_12BIT,
                                     NRF_SAADC_OVERSAMPLE_DISABLED, NULL);
     if (err == 0) {
@@ -585,18 +593,22 @@ static DEVICE_API(ad8232, ad8232_api) = {
  * The reserved timer is owned by this driver, not a Zephyr counter driver.
  * DEVICE_DT_INST_DEFINE binds immutable config, mutable data and the API table.
  */
-#define DRIVER_DEFINE(inst) \
-    BUILD_ASSERT(DT_SAME_NODE(AD8232_ADC_NODE(inst), DT_NODELABEL(adc))); \
-    BUILD_ASSERT(DT_STRING_TOKEN(AD8232_CHANNEL(inst), zephyr_gain) == ADC_GAIN_1_6); \
-    BUILD_ASSERT(DT_STRING_TOKEN(AD8232_CHANNEL(inst), zephyr_reference) == ADC_REF_INTERNAL); \
-    BUILD_ASSERT(DT_PROP(AD8232_CHANNEL(inst), zephyr_resolution) == 12); \
-    BUILD_ASSERT(!DT_PROP_OR(AD8232_CHANNEL(inst), zephyr_differential, 0)); \
-    BUILD_ASSERT(DT_PROP_OR(AD8232_CHANNEL(inst), zephyr_oversampling, 0) == 0); \
-    BUILD_ASSERT(DT_PROP(AD8232_CHANNEL(inst), zephyr_acquisition_time) == ADC_ACQ_TIME_DEFAULT || \
-                 DT_PROP(AD8232_CHANNEL(inst), zephyr_acquisition_time) == \
+#define AD8232_VALIDATE_CHANNEL(inst, idx) \
+    BUILD_ASSERT(DT_SAME_NODE(DT_IO_CHANNELS_CTLR_BY_IDX(DT_DRV_INST(inst), idx), DT_NODELABEL(adc))); \
+    BUILD_ASSERT(DT_STRING_TOKEN(AD8232_CHANNEL_BY_IDX(inst, idx), zephyr_gain) == ADC_GAIN_1_6); \
+    BUILD_ASSERT(DT_STRING_TOKEN(AD8232_CHANNEL_BY_IDX(inst, idx), zephyr_reference) == ADC_REF_INTERNAL); \
+    BUILD_ASSERT(DT_PROP(AD8232_CHANNEL_BY_IDX(inst, idx), zephyr_resolution) == 12); \
+    BUILD_ASSERT(!DT_PROP_OR(AD8232_CHANNEL_BY_IDX(inst, idx), zephyr_differential, 0)); \
+    BUILD_ASSERT(DT_PROP_OR(AD8232_CHANNEL_BY_IDX(inst, idx), zephyr_oversampling, 0) == 0); \
+    BUILD_ASSERT(DT_PROP(AD8232_CHANNEL_BY_IDX(inst, idx), zephyr_acquisition_time) == ADC_ACQ_TIME_DEFAULT || \
+                 DT_PROP(AD8232_CHANNEL_BY_IDX(inst, idx), zephyr_acquisition_time) == \
                  ADC_ACQ_TIME(ADC_ACQ_TIME_MICROSECONDS, 10)); \
-    BUILD_ASSERT(DT_PROP(AD8232_CHANNEL(inst), zephyr_input_positive) < 8); \
-    BUILD_ASSERT(DT_IO_CHANNELS_INPUT(DT_DRV_INST(inst)) < 8); \
+    BUILD_ASSERT(DT_PROP(AD8232_CHANNEL_BY_IDX(inst, idx), zephyr_input_positive) < 8); \
+    BUILD_ASSERT(DT_IO_CHANNELS_INPUT_BY_IDX(DT_DRV_INST(inst), idx) < 8);
+
+#define DRIVER_DEFINE(inst) \
+    AD8232_VALIDATE_CHANNEL(inst, 0) \
+    AD8232_VALIDATE_CHANNEL(inst, 1) \
     BUILD_ASSERT(DT_NODE_HAS_STATUS(DT_PHANDLE(DT_DRV_INST(inst), sample_timer), reserved)); \
     static struct ad8232_data ad8232_data_##inst = { \
         .timer = NRFX_TIMER_INSTANCE(DT_REG_ADDR( \
@@ -605,8 +617,10 @@ static DEVICE_API(ad8232, ad8232_api) = {
     static const struct ad8232_config ad8232_config_##inst = { \
         .lo_plus = GPIO_DT_SPEC_INST_GET(inst, lo_plus_gpios), \
         .lo_minus = GPIO_DT_SPEC_INST_GET(inst, lo_minus_gpios), \
-        .input = (nrfx_analog_input_t)DT_PROP(AD8232_CHANNEL(inst), zephyr_input_positive), \
-        .channel_id = DT_IO_CHANNELS_INPUT(DT_DRV_INST(inst)), \
+        .input = (nrfx_analog_input_t)DT_PROP(AD8232_CHANNEL_BY_IDX(inst, 0), zephyr_input_positive), \
+        .ch_raw = DT_IO_CHANNELS_INPUT_BY_IDX(DT_DRV_INST(inst), 0), \
+        .input_filter = (nrfx_analog_input_t)DT_PROP(AD8232_CHANNEL_BY_IDX(inst, 1), zephyr_input_positive), \
+        .ch_filter = DT_IO_CHANNELS_INPUT_BY_IDX(DT_DRV_INST(inst), 1), \
     }; \
     DEVICE_DT_INST_DEFINE(inst, ad8232_init, NULL, &ad8232_data_##inst, \
                           &ad8232_config_##inst, POST_KERNEL, 51, &ad8232_api);
