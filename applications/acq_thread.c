@@ -2,6 +2,7 @@
 #include "ad8232.h"
 #include "bmi323_i2c.h"
 #include "storage.h"
+#include "tracking_system.h"
 #include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -147,6 +148,7 @@ static void fsm_change_state(void)
                (unsigned int)acq_app_flags.current_state);
         break;
     }
+    TRK_SET_ACQ_STATE(acq_app_flags.current_state);
 }
 /* Dispatch one handler; state changes are kept in fsm_change_state(). */
 static void fsm_handle_state(void)
@@ -181,6 +183,7 @@ static void fsm_handle_state(void)
                (unsigned int)acq_app_flags.current_state);
         break;
     }
+    TRK_SET_ACQ_STATE(acq_app_flags.current_state);
 }
 
 /* Never discard valid ECG because the latest BMI sample is unavailable. */
@@ -277,6 +280,8 @@ static void wait_buffer_handler(void)
              * This intentionally creates a gap; packet remainder is retained.
              */
             if (acq_resources.stream_running) {
+                TRK_INC_ACQ_DROP();
+                TRK_EVENT("ACQ", "WRN", "DMA_PAUSE_NO_BUF", 1);
                 err = stop_ecg_stream();
                 if (err != 0) {
                     printk("Acquisition: ECG stop failed (%d)\n", err);
@@ -383,6 +388,7 @@ static void read_sample_handler(void)
     acq_resources.packet[ACQ_PACKET_SIZE - 1U] = ACQ_PACKET_TAIL;
     acq_resources.packet_remaining = ACQ_PACKET_SIZE;
     acq_resources.ecg_copied = false;
+    TRK_INC_ACQ_PKT();
     copy_pending_packet();
 }
 

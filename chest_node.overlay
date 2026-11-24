@@ -10,8 +10,8 @@ P0.11 - scl
 P1.00 - sda
 ---------------
 Led
-P0.20 - led1
-P0.17 - led2
+P0.20 - led2
+P0.17 - led1
 P0.08 - led3
 ---------------
 W25N01GV
@@ -21,10 +21,10 @@ P1.02 - miso
 P1.07 - mosi
 --------------
 Switch 4
-P0.10 - sw1 
-P1.11 - sw2
-P1.13 - sw3
-P1.15 - sw4
+P0.10 - sw4
+P1.11 - sw3
+P1.13 - sw2
+P1.15 - sw1
 -------------
 Battery Monitoring 
 P0.31 - bat
@@ -56,10 +56,10 @@ SEL_CAL SEL_PULSE     mode         Điện áp vi sai
     debug_leds {
         compatible = "gpio-leds";
         /* Assumes LEDs turn on when driven low. */
-        debug_led1: led_1 {
+        debug_led2: led_2 {
             gpios = <&gpio0 20 GPIO_ACTIVE_LOW>;
         };
-        debug_led2: led_2 {
+        debug_led1: led_1 {
             gpios = <&gpio0 17 GPIO_ACTIVE_LOW>;
         };
         debug_led3: led_3 {
@@ -72,19 +72,19 @@ SEL_CAL SEL_PULSE     mode         Điện áp vi sai
         compatible = "gpio-keys";
         /* Assumes switches connect the inputs to ground. */
         debug_sw1: switch_1 {
-            gpios = <&gpio0 10 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+            gpios = <&gpio1 15 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
             zephyr,code = <INPUT_KEY_0>;
         };
         debug_sw2: switch_2 {
-            gpios = <&gpio1 11 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+            gpios = <&gpio1 13 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
             zephyr,code = <INPUT_KEY_1>;
         };
         debug_sw3: switch_3 {
-            gpios = <&gpio1 13 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+            gpios = <&gpio1 11 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
             zephyr,code = <INPUT_KEY_2>;
         };
         debug_sw4: switch_4 {
-            gpios = <&gpio1 15 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+            gpios = <&gpio0 10 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
             zephyr,code = <INPUT_KEY_3>;
         };
     };
@@ -192,6 +192,7 @@ SEL_CAL SEL_PULSE     mode         Điện áp vi sai
 };
 
 &spi2 {
+    compatible = "nordic,nrf-spim";
     status = "okay";
     pinctrl-0 = <&w25n01gv_spi_default>;
     pinctrl-1 = <&w25n01gv_spi_sleep>;
@@ -204,16 +205,16 @@ SEL_CAL SEL_PULSE     mode         Điện áp vi sai
         compatible = "jedec,spi-nand";
         reg = <0>; /* Uses chip-select entry 0. */
         /* nRF52840 SPIM2 limit; W25N01GV supports a higher clock. */
-        spi-max-frequency = <8000000>;
+        spi-max-frequency = <2000000>;
         jedec-id = [ef aa 21]; /* W25N01GV manufacturer and device ID. */
         size-bytes = <134217728>; /* Total capacity: 1 Gbit = 128 MiB. */
         erase-block-size = <131072>; /* Physical erase block: 64 × 2048-byte pages. */
         write-block-size = <2048>; /* NAND page-program size. */
         /* Maximum operation times in microseconds; follow the chip datasheet. */
-        block-erase-duration-max = <10000>;
-        page-program-duration-max = <700>;
-        page-read-duration-max = <100>;
-        reset-duration-max = <500>;
+        block-erase-duration-max = <20000>;
+        page-program-duration-max = <5000>;
+        page-read-duration-max = <2000>;
+        reset-duration-max = <2000>;
         status = "okay";
     };
 };

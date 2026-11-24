@@ -1,4 +1,5 @@
 #include "storage_thread.h"
+#include "tracking_system.h"
 #include <errno.h>
 #include <stdbool.h>
 #include <zephyr/kernel.h>
@@ -95,6 +96,7 @@ static void fsm_change_state(void){
         default:
             break;
     }
+    TRK_SET_STG_STATE(storage_app_flags.current_state);
 }
 /* Dispatch the current action without changing the state itself. */
 static void fsm_handle_state(void){
@@ -115,6 +117,7 @@ static void fsm_handle_state(void){
         default:
             break;
     }
+    TRK_SET_STG_STATE(storage_app_flags.current_state);
 }
 
 /* Take ownership of the next buffer; no Flash access is needed here. */
@@ -164,11 +167,15 @@ static void storage_wait_write_ready_handler(void)
         storage_thread_resources.storage_locked = false;
         if (err == -ENOSPC){
             printk("Storage: no write space\n");
+            TRK_INC_STG_ERR();
+            TRK_EVENT("STG", "WRN", "FLASH_FULL", err);
             /* Keep the pending buffer and avoid a busy loop while full. */
             k_sleep(K_MSEC(100));
         }
         else {
             printk("Storage: space check failed (%d)\n", err);
+            TRK_INC_STG_ERR();
+            TRK_EVENT("STG", "ERR", "SPACE_CHK_ERR", err);
         }
         return;
     }
@@ -186,6 +193,14 @@ static void storage_write_data_handler(void){
 
         if (err != 0) {
             printk("Storage: write failed (%d)\n", err);
+            TRK_INC_STG_ERR();
+            TRK_EVENT("STG", "ERR", "WRITE_ERR", err);
+        } else {
+            uint32_t data_size = 0U;
+
+            (void)storage_get_data_size(&data_size);
+            TRK_INC_STG_PAGE(data_size);
+            TRK_EVENT("STG", "INF", "WRITE_OK", (int32_t)(data_size / STORAGE_BLOCK_SIZE));
         }
     }
     /* Release after each write, including failures, so BLE can acquire it. */

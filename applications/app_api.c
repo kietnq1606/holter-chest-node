@@ -6,6 +6,8 @@
 #include "storage_thread.h"
 #include "ble_thread.h"
 #include "signal_mux.h"
+#include "storage.h"
+#include "tracking_system.h"
 
 
 #define ACQ_STACK_SIZE     1024
@@ -81,6 +83,11 @@ int system_init(void)
         k_msgq_purge(&free_queue);
         return err;
     }
+    uint32_t init_flash_bytes = 0U;
+
+    (void)storage_get_data_size(&init_flash_bytes);
+    TRK_INIT(&free_queue, &ready_queue, init_flash_bytes);
+
     system_initialized = true;
     return 0;
 }
@@ -132,5 +139,6 @@ void system_run(){
     /* Acquisition starts immediately and waits when no free buffer is available. */
     k_thread_start(&acq_tcb);
     k_thread_start(&ble_tcb);
+    TRK_START();
 
 }

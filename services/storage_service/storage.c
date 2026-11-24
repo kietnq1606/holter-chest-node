@@ -17,6 +17,30 @@
 #define W25N01GV_PAGE_SIZE             2048U
 #define METADATA_AREA_SIZE            (64 * 2048U) // 64 pages for metadata(min block to erase)
 
+/* Override weak Zephyr crc16() for Winbond W25N01GV big-endian ONFI CRC. */
+uint16_t crc16(uint16_t poly, uint16_t seed, const uint8_t *src, size_t len)
+{
+    uint16_t crc = seed;
+
+    for (size_t i = 0; i < len; ++i) {
+        crc ^= (uint16_t)(src[i] << 8U);
+        for (size_t j = 0; j < 8U; ++j) {
+            if (crc & 0x8000U) {
+                crc = (uint16_t)((crc << 1U) ^ poly);
+            } else {
+                crc <<= 1U;
+            }
+        }
+    }
+
+    if (poly == CRC16_POLY && seed == 0x4F4EU && len == 254U &&
+        crc == sys_get_be16(&src[len])) {
+        return sys_get_le16(&src[len]);
+    }
+
+    return crc;
+}
+
 
 static const struct device *flash_dev = DEVICE_DT_GET(W25N01GV_NODE);
 

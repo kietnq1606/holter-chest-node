@@ -4,6 +4,8 @@ find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(chest_node)
 
 target_sources(app PRIVATE
+    #test/eraseAll_flash.c
+    #test/readAll_flash.c
     core/main.c
     applications/app_api.c
     applications/acq_thread.c
@@ -15,6 +17,7 @@ target_sources(app PRIVATE
     services/debug_io/debug_io.c
     services/storage_service/storage.c
     services/ble_service/nus.c
+    services/tracking/tracking_system.c
 )
 target_include_directories(app PRIVATE
     core
@@ -25,4 +28,5 @@ target_include_directories(app PRIVATE
     services/debug_io
     services/ble_service
     services/storage_service
+    services/tracking
 )

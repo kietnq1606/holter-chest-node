@@ -1,6 +1,7 @@
 #include "ble_thread.h"
 #include "nus.h"
 #include "storage.h"
+#include "tracking_system.h"
 #include <errno.h>
 #include <stdbool.h>
 #include <string.h>
@@ -356,6 +357,7 @@ static void fsm_change_state(void)
 {
     if (ble_app_flags.failed) {
         ble_app_flags.current_state = ble_app_done;
+        TRK_SET_BLE_STATE(ble_app_flags.current_state);
         return;
     }
 
@@ -409,6 +411,7 @@ static void fsm_change_state(void)
             ble_app_flags.current_state = ble_app_idle;
             break;
         }
+    TRK_SET_BLE_STATE(ble_app_flags.current_state);
 }
 static void fsm_handle_state(struct k_mutex *storage_mutex)
 {
@@ -483,6 +486,7 @@ static void received_cmd_handler(struct k_mutex *storage_mutex)
     transfer.page_pos = STORAGE_BLOCK_DATA_SIZE;
     /* Retain ownership across reads, BLE retries and the erase after END ACK. */
     ble_app_flags.verified_cmd = true;
+    TRK_EVENT("BLE", "INF", "CMD_READ_START", (int32_t)transfer.storage_end);
     return;
 
 unlock_storage:
@@ -592,6 +596,7 @@ static void wait_reply_handler(void)
     if (ble_app_flags.ack_received) {
         /* Advance only confirmed DATA; END does not consume storage bytes. */
         if (!ble_app_flags.done) {
+            TRK_ADD_BLE_TX(transfer.payload_len);
             transfer.page_pos += transfer.payload_len;
             if (transfer.page_pos == STORAGE_BLOCK_DATA_SIZE) {
                 transfer.page_offset += STORAGE_BLOCK_SIZE;
@@ -602,9 +607,14 @@ static void wait_reply_handler(void)
             int err = storage_erase_all_datas();
             if (err != 0) {
                 printk("[BLE_THREAD] Storage erase failed: %d\n", err);
+                TRK_INC_BLE_ERR();
+                TRK_EVENT("BLE", "ERR", "ERASE_ERR", err);
                 ble_app_flags.failed = true;
                 return;
             }
+            TRK_SET_FLASH_BYTES(0U);
+            TRK_EVENT("BLE", "INF", "SESSION_DONE", (int32_t)transfer.storage_end);
+            TRK_EVENT("STG", "INF", "ERASE_ALL", 0);
         }
 
         transfer.seq++;
@@ -619,6 +629,10 @@ static void wait_reply_handler(void)
                (unsigned int)transfer.seq,
                (unsigned int)ble_app_flags.retry_count);
         ble_app_flags.ack_timeout = !ble_app_flags.nack_received;
+        TRK_INC_BLE_ERR();
+        TRK_EVENT("BLE", "WRN",
+                  ble_app_flags.nack_received ? "BLE_NACK" : "BLE_TIMEOUT",
+                  (int32_t)ble_app_flags.retry_count);
         if (ble_app_flags.retry_count >= BLE_MAX_RETRIES) {
             printk("[BLE_THREAD] Reply retry limit reached\n");
             ble_app_flags.failed = true;
